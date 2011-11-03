@@ -72,7 +72,6 @@ def LinearFadeOut(sound, length=None):
 
   gain = numpy.ones(len(sound))
   gain[-samples:] = 1.0 - (numpy.arange(samples).astype(numpy.float64) / samples)
-  print gain[::1000]
 
   return sound * gain
 
