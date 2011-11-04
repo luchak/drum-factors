@@ -4,6 +4,7 @@ import math
 import sys
 import wave
 
+import cvxopt.solvers
 import matplotlib.pyplot
 import numpy
 
@@ -62,7 +63,7 @@ def Sweep(length, start, end):
 
 def Noise(length):
   samples = int(SAMPLE_RATE * length)
-  return numpy.random.random(samples)
+  return 2.0*numpy.random.random(samples) - 1.0
 
 def DifferenceFilter(sound):
   return numpy.convolve(numpy.array((1.0, -1.0)), sound)
@@ -89,6 +90,9 @@ def SumWithLength(a, b, length):
   result[:b_copy_length] += b[:b_copy_length]
   return result
 
+def Normalize(sound):
+  return sound / max(abs(sound))
+
 def SumUnequal(a, b):
   new_length = max(len(a), len(b))
   return SumWithLength(a, b, new_length)
@@ -103,21 +107,24 @@ def PlotFFT(data):
   matplotlib.pyplot.show()
 
 def main(argv):
-  bd = LinearFadeOut(Sweep(0.15, 140, 50))
-  hh = DifferenceFilter(Noise(0.05))
-  sn = SumUnequal(LinearFadeOut(SumFilter(Noise(0.1))), LinearFadeOut(Sweep(0.05, 200, 150)))
+  bd = 2.0*LinearFadeOut(Sweep(0.15, 140, 50))
+  hh1 = Noise(0.05)
+  hh2 = 2.0*DifferenceFilter(hh1)
+  hh3 = 2.0*LinearFadeOut(DifferenceFilter(DifferenceFilter(Noise(0.2))))
+  sn = SumUnequal(LinearFadeOut(SumFilter(Noise(0.1))), 3.0*LinearFadeOut(Sweep(0.08, 200, 130)))
 
   num_beats = 16
+  if len(argv) > 2:
+    num_beats = int(argv[2])
 
   loop = ReadWav(argv[1])
   beat_length = len(loop)/num_beats
   loop_beat_ffts = [FFTMagnitudes(loop[i*beat_length:(i+1)*beat_length]) for i in range(num_beats)]
   fft_length = len(loop_beat_ffts[0])
 
-  samples = [bd, hh, sn]
+  samples = [bd, hh1, hh2, hh3, sn]
   sample_ffts = []
   for sample in samples:
-    PlotFFT(sample)
     padded_sample = numpy.zeros(beat_length)
     copy_length = min(beat_length, len(sample))
     padded_sample[:copy_length] = sample[:copy_length]
@@ -132,8 +139,24 @@ def main(argv):
       sample_matrix_rows.append(padded_row)
   sample_matrix = numpy.array(sample_matrix_rows).T
 
-  sequence = numpy.linalg.lstsq(sample_matrix, target)[0]
+  gamma = 200000.0
+  #sequence = numpy.linalg.lstsq(sample_matrix, target)[0]
+  sequence_items = sample_matrix.shape[1]
+  zero_matrix = cvxopt.spmatrix([], [], [], size=(sequence_items, sequence_items))
+  quadratic_objective = cvxopt.sparse([[cvxopt.matrix(numpy.dot(sample_matrix.T, sample_matrix)), zero_matrix], [zero_matrix, zero_matrix]])
+  linear_objective = cvxopt.matrix([[cvxopt.matrix(-numpy.dot(sample_matrix.T, target)), cvxopt.matrix(gamma * numpy.ones(sequence_items))]])
+  sequence_eye = cvxopt.spmatrix(1.0, range(sequence_items), range(sequence_items))
+  l1_norm_matrix = cvxopt.sparse([[sequence_eye, -sequence_eye, -sequence_eye], [-sequence_eye, -sequence_eye, sequence_eye*0]])
+  l1_norm_target = cvxopt.matrix(cvxopt.matrix(numpy.zeros(3*sequence_items)))
+  sequence = cvxopt.solvers.coneqp(quadratic_objective, linear_objective, l1_norm_matrix, l1_norm_target)['x']
+  sequence = numpy.array(sequence)[:sequence_items]
   sequence = sequence.reshape((len(sequence)/num_beats, num_beats))
+
+  print sequence
+  binary_sequence = sequence.copy()
+  binary_sequence[sequence < 1e-4] = 0.0
+  binary_sequence[binary_sequence > 0.0] = 1.0
+  print binary_sequence
 
   loop_out = numpy.zeros(num_beats * beat_length)
   for i, sample in enumerate(samples):
